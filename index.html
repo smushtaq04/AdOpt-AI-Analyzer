@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AdOpt-AI — Campaign Analyzer</title>
+  <style>
+    body {font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; max-width:980px;margin:28px auto;padding:0 16px;color:#111}
+    header h1 {margin:0 0 6px}
+    .panel {border:1px solid #eee;border-radius:8px;padding:16px;margin-bottom:16px;background:#fff}
+    label{display:block;margin:8px 0 6px;font-weight:600}
+    input[type=file]{margin-top:8px}
+    textarea{width:100%;height:140px;font-family:monospace}
+    button{background:#0070f3;color:white;border:none;padding:10px 14px;border-radius:6px;cursor:pointer}
+    table{width:100%;border-collapse:collapse;margin-top:8px}
+    th,td{border:1px solid #eee;padding:8px;text-align:left;font-size:13px}
+    .results{white-space:pre-wrap;background:#f8f9fb;border-radius:8px;padding:12px}
+    footer{font-size:13px;color:#666;margin-top:16px}
+    .small{font-size:13px;color:#444}
+    .row {display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .row > * {flex: 1 1 220px}
+  </style>
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>AdOpt-AI — Campaign Analyzer</h1>
+    <p class="small">Upload a CSV of campaigns or paste CSV/plain text. The analyzer computes metrics, evaluates A/B tests, compares cross-channel and same-channel campaigns, and asks an LLM for prioritized optimization recommendations.</p>
+  </header>
+
+  <div class="panel">
+    <label>Input method</label>
+    <div class="row">
+      <div>
+        <div class="small">Upload CSV file</div>
+        <input id="file" type="file" accept=".csv" />
+      </div>
+      <div>
+        <div class="small">Or paste CSV / plain text (first line must be headers)</div>
+        <textarea id="csvInput" placeholder="campaign_id,platform,campaign_name,start_date,end_date,impressions,clicks,conversions,spend,revenue,variant,product
+c1,Meta,Summer Launch,2025-06-01,2025-06-07,100000,2500,150,6000,15000,A,Sneaker-X"></textarea>
+      </div>
+    </div>
+
+    <div style="margin-top:12px" class="row">
+      <div>
+        <label>Select Analysis Focus</label>
+        <select id="analysisFocus">
+          <option value="cross_channel">Cross-Channel (e.g., Meta vs Google)</option>
+          <option value="ab_test">A/B Test Comparison</option>
+          <option value="same_platform_diff_products">Same Platform (Different Products)</option>
+          <option value="same_platform_same_product">Same Platform (Same Product)</option>
+          <option value="custom">Custom / Mixed</option>
+        </select>
+      </div>
+      <div>
+        <label>What do you want to analyze? (Be specific)</label>
+        <input id="analysisQuestion" placeholder='e.g. "Which campaign has the best ROAS? Recommend reallocation and experiments."'/>
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <label>Select model (server-side will respect):</label>
+      <select id="model">
+        <option value="gpt-4o-mini">gpt-4o-mini (recommended)</option>
+        <option value="gpt-4">gpt-4</option>
+        <option value="gpt-4o">gpt-4o</option>
+      </select>
+    </div>
+
+    <div style="margin-top:12px">
+      <button id="analyzeBtn">Analyze campaigns</button>
+      <span id="status" class="small" style="margin-left:12px"></span>
+    </div>
+
+    <div style="margin-top:10px" class="small">
+      Required CSV headers (case-sensitive): campaign_id, platform, campaign_name, start_date, end_date, impressions, clicks, conversions, spend, revenue, variant (optional for A/B), product (optional), ad_set (optional), audience (optional)
+    </div>
+  </div>
+
+  <div id="output" style="display:none">
+    <div class="panel">
+      <h3>Computed metrics</h3>
+      <div id="metricsContainer"></div>
+    </div>
+
+    <div class="panel">
+      <h3>LLM analysis & recommendations</h3>
+      <div id="llmContainer" class="results"></div>
+    </div>
+    <div class="panel">
+      <button id="downloadJson">Download analysis JSON</button>
+    </div>
+  </div>
+
+  <footer>
+    <div>Next steps: for continuous ingestion connect your platform APIs (Google Ads, Meta Ads, TikTok Ads) and schedule daily syncs. Keep API keys on the server and protect the endpoint. See README.md for server setup.</div>
+  </footer>
+
+  <script>
+    const fileEl = document.getElementById('file');
+    const csvEl = document.getElementById('csvInput');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const status = document.getElementById('status');
+    const output = document.getElementById('output');
+    const metricsContainer = document.getElementById('metricsContainer');
+    const llmContainer = document.getElementById('llmContainer');
+    const modelSel = document.getElementById('model');
+    const downloadBtn = document.getElementById('downloadJson');
+    const analysisFocusEl = document.getElementById('analysisFocus');
+    const analysisQuestionEl = document.getElementById('analysisQuestion');
+
+    let lastResponse = null;
+
+    function showStatus(msg) { status.textContent = msg; }
+
+    function renderComputedMetrics(metrics) {
+      const table = document.createElement('table');
+      table.innerHTML = '<thead><tr><th>campaign_id</th><th>platform</th><th>campaign_name</th><th>product</th><th>impr</th><th>clicks</th><th>conv</th><th>spend</th><th>revenue</th><th>CTR</th><th>CPC</th><th>CPA</th><th>ROAS</th><th>variant</th></tr></thead>';
+      const tbody = document.createElement('tbody');
+      metrics.forEach(r=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML = `<td>${r.campaign_id}</td><td>${r.platform}</td><td>${r.campaign_name}</td><td>${r.product||''}</td><td>${r.impressions||0}</td><td>${r.clicks||0}</td><td>${r.conversions||0}</td><td>${r.spend||0}</td><td>${r.revenue||0}</td><td>${(r.CTR*100||0).toFixed(2)}%</td><td>${(r.CPC||0).toFixed(2)}</td><td>${(r.CPA||0).toFixed(2)}</td><td>${(r.ROAS||0).toFixed(2)}</td><td>${r.variant||''}</td>`;
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      metricsContainer.innerHTML = '';
+      metricsContainer.appendChild(table);
+    }
+
+    function parseCSVFile(file) {
+      return new Promise((resolve, reject) => {
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: h => h.trim(),
+          complete: results => {
+            resolve(results.data);
+          },
+          error: err => reject(err)
+        });
+      });
+    }
+
+    function parseCSVText(text) {
+      return new Promise((resolve, reject) => {
+        Papa.parse(text, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: h => h.trim(),
+          complete: results => resolve(results.data),
+          error: err => reject(err)
+        });
+      });
+    }
+
+    analyzeBtn.addEventListener('click', async () => {
+      output.style.display = 'none';
+      showStatus('Preparing data...');
+      let campaigns = null;
+      try {
+        if (fileEl.files.length) {
+          campaigns = await parseCSVFile(fileEl.files[0]);
+        } else {
+          const csvText = csvEl.value.trim();
+          if (!csvText) { showStatus('Provide a CSV file or paste CSV/plain text.'); return; }
+          campaigns = await parseCSVText(csvText);
+        }
+      } catch (err) {
+        showStatus('Error parsing CSV input: ' + err.message);
+        return;
+      }
+
+      // Send to server
+      showStatus('Sending to analysis server...');
+      try {
+        const payload = {
+          campaigns,
+          model: modelSel.value,
+          analysis_focus: analysisFocusEl.value,
+          analysis_question: analysisQuestionEl.value.trim()
+        };
+
+        const resp = await fetch('/analyze', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(payload)
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          showStatus('Server error: ' + text);
+          return;
+        }
+        const json = await resp.json();
+        lastResponse = json;
+        renderComputedMetrics(json.computed_campaigns);
+        llmContainer.textContent = json.llm_response || 'No LLM response';
+        output.style.display = 'block';
+        showStatus('Analysis complete.');
+      } catch (err) {
+        showStatus('Network/server error: ' + err.message);
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      if (!lastResponse) return;
+      const blob = new Blob([JSON.stringify(lastResponse, null, 2)],{type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'adopt_ai_analysis.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>
