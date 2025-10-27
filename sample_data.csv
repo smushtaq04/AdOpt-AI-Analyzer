@@ -1,0 +1,6 @@
+campaign_id,platform,campaign_name,start_date,end_date,impressions,clicks,conversions,spend,revenue,variant,product
+c1,Meta,Summer Launch,2025-06-01,2025-06-07,100000,2500,150,6000,15000,A,Sneaker-X
+c1,Meta,Summer Launch,2025-06-01,2025-06-07,98000,2400,130,5800,13000,B,Sneaker-X
+c2,Google,Search Promo,2025-06-02,2025-06-08,120000,1800,90,7000,13500,,Sneaker-X
+c3,TikTok,Creative Test,2025-06-03,2025-06-10,150000,3000,210,9000,21000,A,Cap-Z
+c3,TikTok,Creative Test,2025-06-03,2025-06-10,148000,2900,195,8800,19500,B,Cap-Z
